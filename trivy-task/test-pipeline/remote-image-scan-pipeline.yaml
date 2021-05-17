@@ -1,0 +1,130 @@
+
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: trivy-scan-pipeline
+spec:
+  workspaces:
+    - name: shared-image-repo
+    - name: app-source
+    - name: maven-settings
+    - name: empty-repo
+  params:
+    - name: LOCAL_SCAN_PATH
+      description:  image path
+    - name: REMOTE_IMAGE_URL
+      description:  image path
+    - name: SEVERITY_LEVELS
+      description:  vulnerability severity level
+      default:  HIGH,CRITICAL
+  tasks:
+    - name: clone-source
+      taskRef:
+        name: git-clone
+        kind: ClusterTask
+      params:
+        - name: url
+          value:  https://github.com/ooteniya1/resource-estimation.git
+        - name: revision
+          value:  master
+      workspaces:
+        - name: output
+          workspace: app-source
+    - name: build-application
+      taskRef:  
+        name: maven
+        kind: ClusterTask
+      runAfter:
+        - clone-source
+      params:
+        - name: GOALS
+          value:  
+            - -DskipTests
+            - clean
+            - package
+            - -Pspring
+        - name: CONTEXT_DIR
+          value:  todo-spring-quarkus
+      workspaces:
+        - name: source
+          workspace:  app-source
+        - name: maven-settings
+          workspace: maven-settings
+    - name: scan-fatjar
+      taskRef:
+        name: trivy-scan
+      runAfter:
+          - build-application
+      params:
+        - name: SCAN_TYPE
+          value:  filesystem
+        - name: SEVERITY_LEVELS
+          value:  $(params.SEVERITY_LEVELS)
+        - name: SCAN_PATH_OR_IMAGE_URL
+          value:  $(params.LOCAL_SCAN_PATH)
+      workspaces:
+        - name: local-image-repo
+          workspace: app-source
+    - name: build-image
+      taskRef:
+        name: buildah-build
+        kind: Task
+      runAfter:
+          - build-application
+      params:
+        - name: IMAGE
+          value:  $(params.REMOTE_IMAGE_URL)
+        - name: CONTEXT
+          value:  todo-spring-quarkus
+      workspaces:
+        - name: source
+          workspace: app-source
+        - name: varlibcontainers
+          workspace: shared-image-repo
+    - name: scan-local-image
+      taskRef:
+        name: trivy-scan
+      runAfter:
+          - build-image
+      params:
+        - name: SCAN_TYPE
+          value:  filesystem
+        - name: SEVERITY_LEVELS
+          value:  CRITICAL
+        - name: SCAN_PATH_OR_IMAGE_URL
+          value:  $(params.LOCAL_SCAN_PATH)
+      workspaces:
+        - name: local-image-repo
+          workspace: shared-image-repo
+    - name: push-image
+      taskRef:
+        name: buildah-push
+        kind: Task
+      runAfter:
+          - build-image
+      params:
+        - name: IMAGE
+          value:   $(params.REMOTE_IMAGE_URL)
+        - name: CONTEXT
+          value:  todo-spring-quarkus
+      workspaces:
+        - name: source
+          workspace: app-source
+        - name: varlibcontainers
+          workspace: shared-image-repo
+    - name: scan-remote-image
+      taskRef:
+        name: trivy-scan
+      runAfter:
+          - push-image
+      params:
+        - name: SCAN_TYPE
+          value:  image
+        - name: SEVERITY_LEVELS
+          value:  CRITICAL
+        - name: SCAN_PATH_OR_IMAGE_URL
+          value:  anchore/anchore-engine:latest #$(params.REMOTE_IMAGE_URL)
+      workspaces:
+        - name: local-image-repo
+          workspace: empty-repo
+   
